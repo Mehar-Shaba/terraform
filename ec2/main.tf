@@ -24,3 +24,5 @@ resource "aws_instance" "example" {
     Name = var.instance_name
   }
 }
+
+#this is my main.tf file
