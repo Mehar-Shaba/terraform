@@ -1,68 +1,95 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        AWS_REGION = "ap-south-1"
+  environment {
+    AWS_REGION = "ap-south-1"
+    // ensure terraform binary is on PATH; if installed at /usr/local/bin adjust below
+    PATH = "/usr/local/bin:${env.PATH}"
+  }
+
+  options {
+    // keep build logs reasonably sized
+    ansiColor('xterm')
+    timestamps()
+  }
+
+  stages {
+
+    stage('Checkout Repo (SSH)') {
+      steps {
+        echo "Cloning repo with SSH key (github-ssh)"
+        // sshUserPrivateKey injects a key file at $SSH_KEY
+        withCredentials([sshUserPrivateKey(credentialsId: 'github-ssh', keyFileVariable: 'SSH_KEY')]) {
+          sh """
+            set -eux
+            rm -rf terraform || true
+            export GIT_SSH_COMMAND="ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no -o IdentitiesOnly=yes"
+            git clone git@github.com:Mehar-Shaba/terraform.git
+          """
+        }
+      }
     }
 
-    stages {
-
-        stage('Checkout GitHub Repo') {
-            steps {
-                withCredentials([sshUserPrivateKey(credentialsId: 'github-ssh',
-                                                  keyFileVariable: 'SSH_KEY')]) {
-                    sh '''
-                        rm -rf terraform || true
-                        GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
-                        git clone git@github.com:Mehar-Shaba/terraform.git
-                    '''
-                }
+    stage('Terraform Init') {
+      steps {
+        dir('terraform/ec2') {
+          withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+            // non-interactive init, with a 10 minute timeout in case of slow downloads
+            timeout(time: 10, unit: 'MINUTES') {
+              sh '''
+                set -eux
+                terraform init -input=false -no-color
+              '''
             }
+          }
         }
-
-        stage('Terraform Init') {
-            steps {
-                dir('terraform/ec2') {
-                    withCredentials([
-                        [$class: 'AmazonWebServicesCredentialsBinding',
-                         credentialsId: 'aws-creds']
-                    ]) {
-                        sh '''
-                            terraform init
-                        '''
-                    }
-                }
-            }
-        }
-
-        stage('Terraform Plan') {
-            steps {
-                dir('terraform/ec2') {
-                    withCredentials([
-                        [$class: 'AmazonWebServicesCredentialsBinding',
-                         credentialsId: 'aws-creds']
-                    ]) {
-                        sh '''
-                            terraform plan
-                        '''
-                    }
-                }
-            }
-        }
-
-        stage('Terraform Apply') {
-            steps {
-                dir('terraform/ec2') {
-                    withCredentials([
-                        [$class: 'AmazonWebServicesCredentialsBinding',
-                         credentialsId: 'aws-creds']
-                    ]) {
-                        sh '''
-                            terraform apply -auto-approve
-                        '''
-                    }
-                }
-            }
-        }
+      }
     }
+
+    stage('Terraform Validate & Plan') {
+      steps {
+        dir('terraform/ec2') {
+          withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+            timeout(time: 15, unit: 'MINUTES') {
+              sh '''
+                set -eux
+                terraform validate -no-color || true
+                terraform plan -input=false -out=tfplan -no-color
+              '''
+            }
+          }
+        }
+      }
+    }
+
+    stage('Approve & Apply') {
+      steps {
+        dir('terraform/ec2') {
+          // manual approval — remove input() if you want auto-apply
+          input message: "Approve Terraform apply to create EC2?"
+          withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+            timeout(time: 15, unit: 'MINUTES') {
+              sh '''
+                set -eux
+                terraform apply -input=false -auto-approve tfplan -no-color
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "✅ Terraform run finished successfully."
+    }
+    failure {
+      echo "❌ Pipeline failed — check console logs."
+    }
+    always {
+      // collect terraform state/logs if you want
+      archiveArtifacts artifacts: 'terraform/ec2/*.tfstate, terraform/ec2/*.log', allowEmptyArchive: true
+    }
+  }
 }
