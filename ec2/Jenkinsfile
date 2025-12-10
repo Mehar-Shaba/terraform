@@ -12,7 +12,7 @@ pipeline {
                 withCredentials([sshUserPrivateKey(credentialsId: 'github-ssh',
                                                   keyFileVariable: 'SSH_KEY')]) {
                     sh '''
-                        rm -rf ec2 || true
+                        rm -rf terraform || true
                         GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
                         git clone git@github.com:Mehar-Shaba/terraform.git
                     '''
